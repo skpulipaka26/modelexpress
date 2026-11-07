@@ -92,6 +92,10 @@ class ModelExpressTrainerConfig:
     process_group: Any | None = None
     object_storage: ObjectStorageConfig | None = None
     engine_context: TrainerEngineContext | None = None
+    # Release a shard once no generator reads it from this trainer, rather than once no
+    # generator holds its version, so generators reading the version from peers do not
+    # hold this trainer's buffers. Safe only when every generator marks its trainer reads.
+    release_after_trainer_reads: bool = False
 
     def __post_init__(self) -> None:
         if self.payload_format is WeightPayloadFormat.UNSPECIFIED:
@@ -198,6 +202,7 @@ class ModelExpressTrainerClient:
                 process_group=config.process_group,
                 service=lambda: client._service,
                 rpc_timeout_seconds=config.rpc_timeout_seconds,
+                release_after_trainer_reads=config.release_after_trainer_reads,
             )
             client.worker_endpoint = client._runtime.worker_endpoint
             if client._runtime.requires_registration:
@@ -297,12 +302,14 @@ class ModelExpressTrainerClient:
     ) -> None:
         self._active_runtime().publish(version=version, staged=staged)
 
-    def release_version(self, *, version: WeightVersionRef) -> None:
+    def release_version(self, *, version: WeightVersionRef, wait: bool = True) -> bool:
+        """Free this shard's copy of ``version`` once no reader holds it. With ``wait=False``, return False
+        instead of waiting while a reader does, so a trainer can keep training and release it later."""
         if self._closed:
             raise RuntimeError("trainer client is closed")
         if not isinstance(version, WeightVersionRef):
             raise TypeError("version must be a WeightVersionRef")
-        self._active_runtime().release(version=version)
+        return self._active_runtime().release(version=version, wait=wait)
 
     def pop_metrics(self) -> dict[str, int | float]:
         return self._active_runtime().pop_metrics()
