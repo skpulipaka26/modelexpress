@@ -764,13 +764,24 @@ class _VllmInstaller(EngineInstaller):
         whole = isinstance(prepared, SourceReplayBatch)
 
         def weights(other_ranks: Callable[[str], bool]):
-            for batch in (prepared,) if whole else prepared.batches():
+            from vllm.model_executor.model_loader.reload.layerwise import LAYERWISE_INFO
+            from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
+            for index, batch in enumerate((prepared,) if whole else prepared.batches()):
                 if batch.replay_id != replay_id:
                     raise IncompleteRefit("staged sources belong to a different loader replay plan")
                 sources = {write.src_name: source for _, write, source in batch.writes}
-                for name, tensor in to_hf(sources).items():
+                hf = to_hf(sources)
+                if self._device.index == 0:
+                    logger.warning("DEBUG batch %d sources=%s", index, [(n, tuple(t.shape), str(t.dtype)) for n, t in sources.items()][:6])
+                    logger.warning("DEBUG batch %d hf=%s", index, [(n, tuple(t.shape)) for n, t in hf.items() if not other_ranks(n)][:8])
+                for name, tensor in hf.items():
                     if not other_ranks(name):
                         yield name, tensor.to(self._device, copy=True)
+                if self._device.index == 0 and index < 40:
+                    for layer, info in LAYERWISE_INFO.items():
+                        if getattr(info, "loaded_weights", None):
+                            tensors = {n: (tuple(t.shape), str(t.dtype)) for n, t in get_layer_tensors(layer).items()}
+                            logger.warning("DEBUG pending %s numel=%s/%s buffered=%s tensors=%s", type(layer).__name__, info.load_numel, info.load_numel_total, [n for n, _ in info.loaded_weights][:8], tensors)
 
         def load(_aliases: _ParameterAliases) -> None:
             # vLLM computes expert ownership from the current config, set inside the reload.
