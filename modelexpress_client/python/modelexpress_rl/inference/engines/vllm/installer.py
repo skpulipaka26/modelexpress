@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
+import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -772,8 +773,8 @@ class _VllmInstaller(EngineInstaller):
                 sources = {write.src_name: source for _, write, source in batch.writes}
                 hf = to_hf(sources)
                 if self._device.index == 0:
-                    logger.warning("DEBUG batch %d sources=%s", index, [(n, tuple(t.shape), str(t.dtype)) for n, t in sources.items()][:6])
-                    logger.warning("DEBUG batch %d hf=%s", index, [(n, tuple(t.shape)) for n, t in hf.items() if not other_ranks(n)][:8])
+                    print("DEBUG batch %d sources=%s" % (index, [(n, tuple(t.shape), str(t.dtype)) for n, t in sources.items()][:6]), file=sys.stderr, flush=True)
+                    print("DEBUG batch %d hf_kept=%d hf_total=%d first=%s" % (index, sum(not other_ranks(n) for n in hf), len(hf), [(n, tuple(t.shape)) for n, t in hf.items() if not other_ranks(n)][:6]), file=sys.stderr, flush=True)
                 for name, tensor in hf.items():
                     if not other_ranks(name):
                         yield name, tensor.to(self._device, copy=True)
@@ -781,11 +782,14 @@ class _VllmInstaller(EngineInstaller):
                     for layer, info in LAYERWISE_INFO.items():
                         if getattr(info, "loaded_weights", None):
                             tensors = {n: (tuple(t.shape), str(t.dtype)) for n, t in get_layer_tensors(layer).items()}
-                            logger.warning("DEBUG pending %s numel=%s/%s buffered=%s tensors=%s", type(layer).__name__, info.load_numel, info.load_numel_total, [n for n, _ in info.loaded_weights][:8], tensors)
+                            print("DEBUG pending %s numel=%s/%s buffered=%s tensors=%s" % (type(layer).__name__, info.load_numel, info.load_numel_total, [n for n, _ in info.loaded_weights][:8], tensors), file=sys.stderr, flush=True)
 
         def load(_aliases: _ParameterAliases) -> None:
             # vLLM computes expert ownership from the current config, set inside the reload.
-            self._model.load_weights(weights(self._other_ranks_expert_filter()))
+            other = self._other_ranks_expert_filter()
+            if self._device.index == 0:
+                print("DEBUG device=%s skips experts.5=%s experts.200=%s" % (self._device, other("layers.0.ffn.experts.5.w1.weight"), other("layers.0.ffn.experts.200.w1.weight")), file=sys.stderr, flush=True)
+            self._model.load_weights(weights(other))
             _require_every_layer_loaded()
 
         if whole:
