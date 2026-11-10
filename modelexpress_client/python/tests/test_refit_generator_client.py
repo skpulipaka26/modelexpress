@@ -26,6 +26,7 @@ from modelexpress_rl import (
     ObjectStorageGeneratorConfig,
     ObjectStorageSource,
     ObjectStorageType,
+    RefitSourceUnavailable,
     VllmGeneratorContext,
     WeightPayloadFormat,
     WeightSource,
@@ -945,7 +946,7 @@ def test_generator_does_not_stage_when_reregistration_fails(monkeypatch):
     service.fail_registration = True
 
     try:
-        with pytest.raises(grpc.RpcError):
+        with pytest.raises(RefitSourceUnavailable):
             generator.stage_weight(version=WeightVersionRef("version-a"))
     finally:
         generator.close()
@@ -1115,9 +1116,9 @@ def test_generator_claims_a_trainer_read_before_reading_the_trainer(monkeypatch,
 
     try:
         if full:
-            with pytest.raises(grpc.RpcError) as refused:
+            with pytest.raises(RefitSourceUnavailable) as refused:
                 generator.stage_weight(version=WeightVersionRef("version-a"))
-            assert refused.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+            assert refused.value.__cause__.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
         else:
             generator.stage_weight(version=WeightVersionRef("version-a")).release()
     finally:
