@@ -2771,6 +2771,37 @@ def test_capture_restores_torchao_reload_state(monkeypatch, fail):
     assert model._do_torchao_reload is True
 
 
+@pytest.mark.parametrize("started_without_weights", [False, True])
+def test_capture_requires_a_version_to_write_every_parameter_of_an_engine_started_without_weights(
+    monkeypatch, started_without_weights
+):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.zeros(2))
+            self.bias = nn.Parameter(torch.zeros(2))
+
+        def load_weights(self, weights):
+            for _name, value in weights:
+                self.weight.weight_loader(self.weight, value)
+
+    _install_fake_vllm(monkeypatch, lambda _model: None)
+    layerwise = sys.modules["vllm.model_executor.model_loader.reload.layerwise"]
+    layerwise._place_kernel_tensors = lambda *_args: None
+    weight_utils = ModuleType("vllm.model_executor.model_loader.weight_utils")
+    weight_utils.default_weight_loader = lambda target, value: target.data.copy_(value)
+    layerwise._get_original_loader = lambda _parameter: weight_utils.default_weight_loader
+    monkeypatch.setitem(sys.modules, weight_utils.__name__, weight_utils)
+    installer = _cpu_installer(Model())
+    installer._started_without_weights = started_without_weights
+
+    if started_without_weights:
+        with pytest.raises(IncompleteRefit, match="leaves 1 parameters .* unwritten: bias"):
+            installer.capture([("weight", torch.float32, (2,))])
+    else:
+        installer.capture([("weight", torch.float32, (2,))])
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("mutation", ["replace", "remove"])
 @pytest.mark.parametrize("restore", [False, True])

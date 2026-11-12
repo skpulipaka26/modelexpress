@@ -12,6 +12,7 @@ import torch.nn as nn
 from modelexpress_rl import envs as mx_envs
 from modelexpress.adapter import StrategyFailed, StrategyRecoveryError
 from modelexpress.load_strategy import execute_load_strategies
+from modelexpress.load_strategy.base import LoadStrategy, mutates_model
 from modelexpress.load_strategy.context import LoadContext, LoadResult
 from modelexpress.load_strategy.default_strategy import DefaultStrategy
 from modelexpress.load_strategy.model_streamer_strategy import ModelStreamerStrategy
@@ -504,6 +505,28 @@ def _resolve_object_storage_replay_chain(
         return chain
 
 
+class UnloadedWeightsStrategy(LoadStrategy):
+    """Allocate the model's weights in their runtime layout without reading any.
+
+    For an engine that installs a version by refit before it serves, where any
+    weights loaded now would be overwritten unread. The tensors are registered,
+    so the engine can serve the versions it installs to peers, but not
+    published: they hold no version's weights.
+    """
+
+    name = "unloaded"
+
+    def load(self, result: LoadResult, ctx: LoadContext) -> LoadResult:
+        with mutates_model():
+            result = ctx.adapter.prepare_rdma_target(result)
+            result = ctx.adapter.before_rdma_receive(result)
+            return ctx.adapter.after_rdma_receive(result)
+
+    def finalize(self, result: LoadResult, ctx: LoadContext) -> None:
+        super().finalize(result, ctx)
+        result.publishable = False
+
+
 class RLLoadStrategyChain:
     """Load using the RL-specific cold-start fallback order."""
 
@@ -523,6 +546,11 @@ class RLLoadStrategyChain:
         ctx.desired_version_uid = _agree_desired_version(ctx)
         # A desired UID is a correctness constraint: version-agnostic fallbacks
         # could load different weights and let the worker serve the wrong version.
+        if ctx.desired_version_uid is not None and envs.MX_REFIT_BEFORE_SERVING:
+            raise ValueError(
+                "MX_REFIT_DESIRED_VERSION_UID loads that version at startup; "
+                "unset it or MX_REFIT_BEFORE_SERVING"
+            )
         if ctx.desired_version_uid is not None:
             source_order = _validate_cold_start_source_order(
                 ctx,
@@ -536,6 +564,8 @@ class RLLoadStrategyChain:
                 )
                 for source in source_order
             ]
+        elif envs.MX_REFIT_BEFORE_SERVING:
+            strategies = [UnloadedWeightsStrategy()]
         else:
             logger.warning(
                 "[Worker %s] RL initial load has no desired version; using "
@@ -557,4 +587,5 @@ __all__ = [
     "DesiredVersionP2PStrategy",
     "DesiredVersionObjectStorageStrategy",
     "RLLoadStrategyChain",
+    "UnloadedWeightsStrategy",
 ]

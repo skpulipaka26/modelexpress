@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from modelexpress import envs
+from modelexpress_rl import envs as rl_envs
 
 from ...adapter import GeneratorEngineContext
 from ...runtime import EngineRuntime, FullTensorEngineCapability
@@ -53,6 +54,10 @@ def _create_vllm_engine_runtime(
         convert_native_to_hf=engine_context.convert_native_to_hf,
         runtime_tensors=runtime_tensors,
         install_through_loader=engine_context.install_through_loader,
+        started_without_weights=(
+            vllm_config.load_config.load_format == "dummy"
+            or rl_envs.MX_REFIT_BEFORE_SERVING
+        ),
     )
 
     def build_identity(version_id: str):

@@ -60,7 +60,7 @@ def test_vllm_engine_runtime_exposes_installation_and_full_tensor_geometry(
     class VllmConfig:
         model_config = ModelConfig()
         parallel_config = SimpleNamespace()
-        load_config = SimpleNamespace(device="cuda:2")
+        load_config = SimpleNamespace(device="cuda:2", load_format="auto")
 
         def __init__(self):
             self.quant_config = quant_config
@@ -152,6 +152,7 @@ def test_vllm_engine_runtime_exposes_installation_and_full_tensor_geometry(
         "device": torch.device("cuda:2"),
         "convert_native_to_hf": convert_native_to_hf,
         "install_through_loader": False,
+        "started_without_weights": False,
     }
     expected_runtime_tensors = (
         {"weight": model.weight} if runtime_p2p_available else None

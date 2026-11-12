@@ -357,6 +357,7 @@ class _VllmInstaller(EngineInstaller):
         convert_native_to_hf: Callable[[dict], dict] | None = None,
         runtime_tensors: dict[str, torch.Tensor] | None = None,
         install_through_loader: bool = False,
+        started_without_weights: bool = False,
     ) -> None:
         self._model = model
         self._vllm_config = vllm_config
@@ -365,6 +366,7 @@ class _VllmInstaller(EngineInstaller):
         self._convert_native_to_hf = convert_native_to_hf
         self._runtime_tensors = runtime_tensors
         self._install_through_loader = install_through_loader
+        self._started_without_weights = started_without_weights
         # Version whose checkpoint bytes the engine holds; None when unknown.
         self._live_version: str | None = None
         self._debug_validate_generator_layout = (
@@ -510,6 +512,22 @@ class _VllmInstaller(EngineInstaller):
             metrics["perf/mx_receive_install_time"] = time.perf_counter() - started
         metrics["installation_tied_input_peak_bytes"] = self._tied_input_peak_bytes
         return metrics
+
+    def _require_every_parameter(self, written: set[str]) -> None:
+        """An engine that started without weights keeps random values in any parameter a version
+        leaves unwritten. A quantized model's scales are derived rather than written, so it is
+        not checked."""
+        if not self._started_without_weights or self._is_quantized:
+            return
+        unwritten = sorted(
+            {name for name, _ in self._model.named_parameters()} - written
+        )
+        if unwritten:
+            more = f", +{len(unwritten) - 5} more" if len(unwritten) > 5 else ""
+            raise IncompleteRefit(
+                f"the version leaves {len(unwritten)} parameters of an engine that "
+                f"started without weights unwritten: {', '.join(unwritten[:5])}{more}"
+            )
 
     @property
     def _is_quantized(self) -> bool:
@@ -676,6 +694,7 @@ class _VllmInstaller(EngineInstaller):
                     for name, p in model.named_parameters()
                 }
                 copied = {item.param_name for item in capture.copies}
+                self._require_every_parameter(copied)
                 persistent_names = frozenset(
                     name
                     for name, value in (
@@ -813,7 +832,9 @@ class _VllmInstaller(EngineInstaller):
             with torch.device(self._device), set_current_vllm_config(self._vllm_config):
                 initialize_layerwise_reload(self._model)
                 # vLLM computes expert ownership from the current config.
-                self._model.load_weights(weights(self._other_ranks_expert_filter()))
+                loaded = self._model.load_weights(weights(self._other_ranks_expert_filter()))
+                if loaded is not None:
+                    self._require_every_parameter(loaded)
                 finalize_layerwise_reload(self._model, self._model_config)
 
         if streamed:

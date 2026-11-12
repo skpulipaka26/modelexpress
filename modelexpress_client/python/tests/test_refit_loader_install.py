@@ -175,6 +175,30 @@ def test_loader_plan_needs_every_source_staged_but_no_parameter_coverage(fallbac
             TrainerTransferPlan.validate_capture(capture, {"weight": ((2, 2), torch.float32)}, plan)
 
 
+@pytest.mark.parametrize(
+    ("started_without_weights", "loaded", "raises"),
+    [
+        (True, set(), True),
+        (True, {"weight"}, False),
+        # An engine loaded from disk keeps the disk values of what a version leaves out.
+        (False, set(), False),
+    ],
+)
+def test_loader_install_writes_every_parameter_of_an_engine_started_without_weights(
+    installer, started_without_weights, loaded, raises
+):
+    installer._started_without_weights = started_without_weights
+    installer._model.load_weights = lambda weights: (list(weights), loaded)[1]
+    installer.capture(MANIFEST)
+    staged = _staged(installer, {"weight": torch.zeros(2, 2), "experts": torch.zeros(3, 2)})
+
+    if raises:
+        with pytest.raises(IncompleteRefit, match="leaves 1 parameters .* unwritten: weight"):
+            installer.install_tensors(staged)
+    else:
+        installer.install_tensors(staged)
+
+
 def test_loader_install_streams_every_batch_through_one_load_weights_call(installer):
     capture, _ = installer.capture(MANIFEST)
     arena = torch.arange(10, dtype=torch.float32)
