@@ -451,6 +451,54 @@ def test_missing_optional_sources_reaches_engine_default(monkeypatch, caplog):
     assert "RL initial load has no desired version" in caplog.text
 
 
+class _RecordingAdapter(EngineAdapter):
+    def __init__(self):
+        self.calls = []
+
+    def prepare_rdma_target(self, result):
+        self.calls.append("allocate")
+        return result
+
+    def before_rdma_receive(self, result):
+        self.calls.append("process")
+        return result
+
+    def after_rdma_receive(self, result):
+        self.calls.append("finalize")
+        return result
+
+    def load_via_native(self, result):
+        self.calls.append("read weights")
+        return result
+
+
+def test_refit_before_serving_registers_unloaded_weights_without_publishing(monkeypatch):
+    monkeypatch.delenv("MX_REFIT_DESIRED_VERSION_UID", raising=False)
+    monkeypatch.setenv("MX_REFIT_BEFORE_SERVING", "1")
+    model = nn.Linear(1, 1)
+    ctx = _context()
+    ctx.adapter = _RecordingAdapter()
+
+    with patch("modelexpress.load_strategy.base.register_tensors") as register, patch(
+        "modelexpress.load_strategy.base.publish_metadata"
+    ) as publish:
+        assert RLLoadStrategyChain.run(model, ctx) is model
+
+    assert (ctx.adapter.calls, register.call_count, publish.call_count) == (
+        ["allocate", "process", "finalize"],
+        1,
+        0,
+    )
+
+
+def test_refit_before_serving_rejects_a_desired_version(monkeypatch):
+    monkeypatch.setenv("MX_REFIT_DESIRED_VERSION_UID", "version-7")
+    monkeypatch.setenv("MX_REFIT_BEFORE_SERVING", "1")
+
+    with pytest.raises(ValueError, match="unset it or MX_REFIT_BEFORE_SERVING"):
+        RLLoadStrategyChain.run(nn.Linear(1, 1), _context())
+
+
 def test_desired_object_storage_is_skipped_without_cache_directory(monkeypatch):
     monkeypatch.setenv("MX_REFIT_DESIRED_VERSION_UID", "version-7")
     monkeypatch.delenv("MX_REFIT_CHECKPOINT_DIR", raising=False)
